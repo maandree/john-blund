@@ -27,39 +27,57 @@ char *argv0;
 void
 usage(void)
 {
-	fprintf(stderr, "usage: %s\n",
+	fprintf(stderr, "usage: %s [-v volume] [-t base-tone] [-g gap] [-m]\n",
 	        argv0 ? argv0 : "john-blund");
 	exit(1);
 }
 
 
 void
-fill_buffer(UTYPE *buffer, double volume)
+fill_buffer(UTYPE *buffer, double volume, long int tone1, long int tone2, int ch)
 {
-#define GENERATE_TONE(tone)  sin(2 * M_PI * ((double)i / (SAMPLE_RATE / (tone))))
+#define GEN_TONE(tone)  sin(2 * M_PI * ((double)(i + last) / (SAMPLE_RATE / (tone))))
 
 	size_t i, j = 0;
+	static size_t last = 0;
 
-	for (i = 0; i < N; i++, j += 2) {
-		buffer[j + 0] = GENERATE_TONE(370) * SMAX * volume - SMIN;
-		buffer[j + 1] = GENERATE_TONE(360) * SMAX * volume - SMIN;
+	if (ch == 2) {
+		for (i = 0; i < N; i++, j += 2) {
+			buffer[j + 0] = GEN_TONE(tone1) * SMAX * volume - SMIN;
+			buffer[j + 1] = GEN_TONE(tone2) * SMAX * volume - SMIN;
+		}
+	} else {
+		for (i = 0; i < N; i++)
+			buffer[i] = (GEN_TONE(tone1) + GEN_TONE(tone2)) * SMAX / 2 * volume - SMIN;
 	}
+
+	last += N;
+	last %= tone1 * tone2 * 1000;
 }
 
 
 int
 main(int argc, char *argv[])
 {
-	UTYPE buffer[N * 2];
-	int r;
+	UTYPE *buffer;
+	int r, channels = 2;
 	snd_pcm_t *sound_handle;
 	snd_pcm_sframes_t frames;
-	int n = 3;
 	double volume = 0.25;
+	long int tone1 = 100, tone2 = 10;
 
 	ARGBEGIN {
 	case 'v':
 		volume *= strtod(EARGF(usage()), NULL);
+		break;
+	case 't':
+		tone1 = strtol(EARGF(usage()), NULL, 10);
+		break;
+	case 'g':
+		tone2 = strtol(EARGF(usage()), NULL, 10); /* gap from tone1 */
+		break;
+	case 'm':
+		channels = 1;
 		break;
 	default:
 		usage();
@@ -68,22 +86,26 @@ main(int argc, char *argv[])
 	if (argc)
 		usage();
 
-	/* Generate audio. */
-	fill_buffer(buffer, volume);
+	tone2 += tone1;
+	buffer = malloc(N * channels * sizeof(*buffer));
+	if (!buffer)
+		return perror("malloc"), 1;
 
 	/* Set up audio. */
 	if (r = snd_pcm_open(&sound_handle, "default", SND_PCM_STREAM_PLAYBACK, 0), r < 0)
 		return fprintf(stderr, "%s: snd_pcm_open: %s\n", *argv, snd_strerror(r)), 1;
 	if (sound_handle == NULL)
-		perror("snd_pcm_open");
+		return perror("snd_pcm_open"), 1;
 
 	/* Configure audio. */
-	r = snd_pcm_set_params(sound_handle, FORMAT, SND_PCM_ACCESS_RW_INTERLEAVED, 2 /* channels */,
+	r = snd_pcm_set_params(sound_handle, FORMAT, SND_PCM_ACCESS_RW_INTERLEAVED, channels,
 	                       SAMPLE_RATE, 1 /* allow resampling? */, LATENCY);
 	if (r < 0)
 		return fprintf(stderr, "%s: snd_pcm_set_params: %s\n", argv0, snd_strerror(r)), 1;
 
-	while (n--) {
+	/* Playback. */
+	for (;;) {
+		fill_buffer(buffer, volume, tone1, tone2, channels);
 		r = frames = snd_pcm_writei(sound_handle, buffer, N);
 		if (frames < 0)
 			r = frames = snd_pcm_recover(sound_handle, r, 0 /* do not print error reason? */);
