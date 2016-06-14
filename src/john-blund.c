@@ -1,4 +1,7 @@
 /* See LICENSE file for copyright and license details. */
+#include <sys/wait.h>
+#include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,14 +20,23 @@
 #define SMAX         INT32_MAX
 #define FORMAT       SND_PCM_FORMAT_U32
 
-#define DURATION     1000    /* ms */
+#define DURATION     100    /* ms */
 #define N            (SAMPLE_RATE / 1000 * DURATION)
 
 
 char *argv0;
+static volatile sig_atomic_t stop = 0;
 
 
-void
+static void
+sigint(int signo)
+{
+	stop = 1;
+	(void) signo;
+}
+
+
+static void
 usage(void)
 {
 	fprintf(stderr, "usage: %s [-v volume] [-t base-tone] [-g gap] [-m]\n",
@@ -33,7 +45,7 @@ usage(void)
 }
 
 
-void
+static void
 fill_buffer(UTYPE *buffer, double volume, long int tone1, long int tone2, int ch)
 {
 #define GEN_TONE(tone)  sin(2 * M_PI * ((double)(i + last) / (SAMPLE_RATE / (tone))))
@@ -65,6 +77,8 @@ main(int argc, char *argv[])
 	snd_pcm_sframes_t frames;
 	double volume = 0.25;
 	long int tone1 = 100, tone2 = 10;
+	pid_t pid;
+	struct sigaction act;
 
 	ARGBEGIN {
 	case 'v':
@@ -91,6 +105,20 @@ main(int argc, char *argv[])
 	if (!buffer)
 		return perror("malloc"), 1;
 
+	/* Set up signal handling. */
+	siginterrupt(SIGTERM, 1);
+	siginterrupt(SIGQUIT, 1);
+	siginterrupt(SIGINT, 1);
+	siginterrupt(SIGHUP, 1);
+	sigemptyset(&(act.sa_mask));
+	act.sa_handler = sigint;
+	act.sa_flags   = 0;
+	sigaction(SIGTERM, &act, NULL);
+	sigaction(SIGQUIT, &act, NULL);
+	sigaction(SIGINT, &act, NULL);
+	sigaction(SIGHUP, &act, NULL);
+	sigprocmask(SIG_SETMASK, &(act.sa_mask), NULL);
+
 	/* Set up audio. */
 	{
 		int tries_left = 2;
@@ -112,7 +140,7 @@ main(int argc, char *argv[])
 		return fprintf(stderr, "%s: snd_pcm_set_params: %s\n", argv0, snd_strerror(r)), 1;
 
 	/* Playback. */
-	for (;;) {
+	while (!stop) {
 		fill_buffer(buffer, volume, tone1, tone2, channels);
 		r = frames = snd_pcm_writei(sound_handle, buffer, N);
 		if (frames < 0)
