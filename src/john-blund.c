@@ -92,8 +92,16 @@ main(int argc, char *argv[])
 		return perror("malloc"), 1;
 
 	/* Set up audio. */
-	if (r = snd_pcm_open(&sound_handle, "default", SND_PCM_STREAM_PLAYBACK, 0), r < 0)
+	{
+		int tries_left = 2;
+		while (tries_left--) {
+			if (r = snd_pcm_open(&sound_handle, "default", SND_PCM_STREAM_PLAYBACK, 0), r < 0)
+				continue;
+			goto success;
+		}
 		return fprintf(stderr, "%s: snd_pcm_open: %s\n", *argv, snd_strerror(r)), 1;
+	success:;
+	}
 	if (sound_handle == NULL)
 		return perror("snd_pcm_open"), 1;
 
